@@ -8,10 +8,12 @@ public class SqlScriptGenerator
 {
     private readonly ILogger<SqlScriptGenerator> _logger;
     private readonly string _scriptsDirectory;
+    private readonly bool _enableIdentityInsert;
 
-    public SqlScriptGenerator(ILogger<SqlScriptGenerator> logger)
+    public SqlScriptGenerator(ILogger<SqlScriptGenerator> logger, bool enableIdentityInsert = true)
     {
         _logger = logger;
+        _enableIdentityInsert = enableIdentityInsert;
         _scriptsDirectory = Path.Combine("files", "migration-scripts");
 
         // Ensure the scripts directory exists
@@ -46,6 +48,21 @@ public class SqlScriptGenerator
         var columns = table.Columns.Select(c => ReservedKeywordHandler.EscapeIdentifier(CaseConverter.ToPascalCase(c.ColumnName))).ToList();
         var columnList = string.Join(", ", columns);
 
+        // Check if table has identity columns
+        var hasIdentityColumns = table.Columns.Any(c => c.IsIdentity);
+
+        if (hasIdentityColumns)
+        {
+            if (_enableIdentityInsert)
+            {
+                _logger.LogInformation("Table {TableName} has identity columns - adding IDENTITY_INSERT statements to script", table.TableName);
+            }
+            else
+            {
+                _logger.LogWarning("Table {TableName} has identity columns but IDENTITY_INSERT is disabled in configuration - identity insert statements will not be added", table.TableName);
+            }
+        }
+
         var scriptContent = new List<string>
         {
             $"-- Data migration script for table: {table.TableName}",
@@ -54,12 +71,21 @@ public class SqlScriptGenerator
             $"-- Total rows in batch: {uniqueData.Count}",
             $"-- Performance optimized for bulk insert",
             $"-- Data ordered by primary key/ID to ensure consistency",
+            hasIdentityColumns ? $"-- Table has identity columns - using IDENTITY_INSERT" : "",
             "",
             "SET NOCOUNT ON;",
             "BEGIN TRANSACTION;",
-            "",
-            $"INSERT INTO {escapedTableName} ({columnList}) VALUES"
+            ""
         };
+
+        // Add identity insert on if table has identity columns
+        if (hasIdentityColumns && _enableIdentityInsert)
+        {
+            scriptContent.Add($"SET IDENTITY_INSERT {escapedTableName} ON;");
+            scriptContent.Add("");
+        }
+
+        scriptContent.Add($"INSERT INTO {escapedTableName} ({columnList}) VALUES");
 
         // Process data in chunks for better performance
         const int chunkSize = 1000;
@@ -103,6 +129,14 @@ public class SqlScriptGenerator
 
         scriptContent.Add(";");
         scriptContent.Add("");
+
+        // Add identity insert off if table has identity columns
+        if (hasIdentityColumns && _enableIdentityInsert)
+        {
+            scriptContent.Add($"SET IDENTITY_INSERT {escapedTableName} OFF;");
+            scriptContent.Add("");
+        }
+
         scriptContent.Add("COMMIT;");
         scriptContent.Add("SET NOCOUNT OFF;");
         scriptContent.Add("");
@@ -140,6 +174,14 @@ public class SqlScriptGenerator
         var columns = table.Columns.Select(c => ReservedKeywordHandler.EscapeIdentifier(CaseConverter.ToPascalCase(c.ColumnName))).ToList();
         var columnList = string.Join(", ", columns);
 
+        // Check if table has identity columns
+        var hasIdentityColumns = table.Columns.Any(c => c.IsIdentity);
+
+        if (hasIdentityColumns)
+        {
+            _logger.LogInformation("Table {TableName} has identity columns - adding IDENTITY_INSERT statements to script", table.TableName);
+        }
+
         var scriptContent = new List<string>
         {
             $"-- High-performance data migration script for table: {table.TableName}",
@@ -148,6 +190,7 @@ public class SqlScriptGenerator
             $"-- Total rows in batch: {uniqueData.Count}",
             $"-- Performance optimized with SQL Server hints",
             $"-- Data ordered by primary key/ID to ensure consistency",
+            hasIdentityColumns ? $"-- Table has identity columns - using IDENTITY_INSERT" : "",
             "",
             "SET NOCOUNT ON;",
             "SET ARITHABORT ON;",
@@ -160,9 +203,17 @@ public class SqlScriptGenerator
             "SET XACT_ABORT ON;",
             "",
             "BEGIN TRANSACTION;",
-            "",
-            $"INSERT INTO {escapedTableName} WITH (TABLOCK) ({columnList}) VALUES"
+            ""
         };
+
+        // Add identity insert on if table has identity columns
+        if (hasIdentityColumns && _enableIdentityInsert)
+        {
+            scriptContent.Add($"SET IDENTITY_INSERT {escapedTableName} ON;");
+            scriptContent.Add("");
+        }
+
+        scriptContent.Add($"INSERT INTO {escapedTableName} WITH (TABLOCK) ({columnList}) VALUES");
 
         // Process data in larger chunks for maximum performance
         const int chunkSize = 2000;
@@ -205,6 +256,14 @@ public class SqlScriptGenerator
 
         scriptContent.Add(";");
         scriptContent.Add("");
+
+        // Add identity insert off if table has identity columns
+        if (hasIdentityColumns && _enableIdentityInsert)
+        {
+            scriptContent.Add($"SET IDENTITY_INSERT {escapedTableName} OFF;");
+            scriptContent.Add("");
+        }
+
         scriptContent.Add("COMMIT;");
         scriptContent.Add("");
         scriptContent.Add("-- Reset session settings");
@@ -246,6 +305,14 @@ public class SqlScriptGenerator
         var columns = table.Columns.Select(c => ReservedKeywordHandler.EscapeIdentifier(CaseConverter.ToPascalCase(c.ColumnName))).ToList();
         var columnList = string.Join(", ", columns);
 
+        // Check if table has identity columns
+        var hasIdentityColumns = table.Columns.Any(c => c.IsIdentity);
+
+        if (hasIdentityColumns)
+        {
+            _logger.LogInformation("Table {TableName} has identity columns - adding IDENTITY_INSERT statements to script", table.TableName);
+        }
+
         // Create CSV data file for bulk insert
         var csvFileName = $"{table.TableName}_{startRow}-{endRow}.csv";
         var csvFilePath = Path.Combine(_scriptsDirectory, csvFileName);
@@ -277,25 +344,42 @@ public class SqlScriptGenerator
             $"-- CSV file: {csvFileName}",
             $"-- Performance optimized using BULK INSERT",
             $"-- Data ordered by primary key/ID to ensure consistency",
+            hasIdentityColumns ? $"-- Table has identity columns - using IDENTITY_INSERT" : "",
             "",
             "SET NOCOUNT ON;",
             "BEGIN TRANSACTION;",
-            "",
-            $"BULK INSERT {escapedTableName}",
-            $"FROM '{csvFilePath.Replace("\\", "\\\\")}'",
-            "WITH (",
-            "    FIRSTROW = 1,",
-            "    FIELDTERMINATOR = ',',",
-            "    ROWTERMINATOR = '\\n',",
-            "    CODEPAGE = '65001',",
-            "    DATAFILETYPE = 'char',",
-            "    MAXERRORS = 0",
-            ");",
-            "",
-            "COMMIT;",
-            "SET NOCOUNT OFF;",
             ""
         };
+
+        // Add identity insert on if table has identity columns
+        if (hasIdentityColumns && _enableIdentityInsert)
+        {
+            scriptContent.Add($"SET IDENTITY_INSERT {escapedTableName} ON;");
+            scriptContent.Add("");
+        }
+
+        scriptContent.Add($"BULK INSERT {escapedTableName}");
+        scriptContent.Add($"FROM '{csvFilePath.Replace("\\", "\\\\")}'");
+        scriptContent.Add("WITH (");
+        scriptContent.Add("    FIRSTROW = 1,");
+        scriptContent.Add("    FIELDTERMINATOR = ',',");
+        scriptContent.Add("    ROWTERMINATOR = '\\n',");
+        scriptContent.Add("    CODEPAGE = '65001',");
+        scriptContent.Add("    DATAFILETYPE = 'char',");
+        scriptContent.Add("    MAXERRORS = 0");
+        scriptContent.Add(");");
+        scriptContent.Add("");
+
+        // Add identity insert off if table has identity columns
+        if (hasIdentityColumns && _enableIdentityInsert)
+        {
+            scriptContent.Add($"SET IDENTITY_INSERT {escapedTableName} OFF;");
+            scriptContent.Add("");
+        }
+
+        scriptContent.Add("COMMIT;");
+        scriptContent.Add("SET NOCOUNT OFF;");
+        scriptContent.Add("");
 
         var scriptFileName = $"{table.TableName}_{startRow}-{endRow}_bulk.sql";
         var scriptFilePath = Path.Combine(_scriptsDirectory, scriptFileName);

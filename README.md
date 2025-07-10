@@ -115,8 +115,25 @@ The tool automatically maps PostgreSQL data types to SQL Server equivalents:
 
 - **BatchSize**: Number of rows to process in each batch (default: 1000)
 - **SkipTables**: Array of table names to skip during migration
+- **SkipDataMigrationTables**: Array of table names to skip during data migration only
 - **SkipStoredProcedures**: Skip stored procedure migration (currently not implemented)
 - **SkipViews**: Skip view migration (currently not implemented)
+- **EnableLogging**: Enable detailed logging (default: true)
+- **ScriptGenerationMethod**: Method for generating data scripts ("Optimized", "HighPerformance", "BulkInsert")
+- **UseBulkInsert**: Use bulk insert for data migration (default: false)
+- **DisableForeignKeyConstraints**: Disable foreign key constraints during data migration (default: true)
+- **ValidateScriptsForDuplicates**: Validate generated scripts for duplicate rows (default: true)
+- **EnableIdentityInsert**: Enable IDENTITY_INSERT for tables with identity columns (default: true)
+
+## Identity Column Handling
+
+The tool automatically detects identity columns (PostgreSQL sequences) and handles them appropriately:
+
+- **Schema Migration**: Identity columns are created with `IDENTITY(1,1)` in SQL Server
+- **Data Migration**: When `EnableIdentityInsert` is enabled (default), the tool automatically adds `SET IDENTITY_INSERT ON/OFF` statements to data migration scripts
+- **Configuration**: You can disable identity insert handling by setting `EnableIdentityInsert` to `false` in `appsettings.json`
+
+This ensures that identity column values are preserved during migration, preventing "IDENTITY_INSERT is not ON" errors.
 
 ## Logging
 

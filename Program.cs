@@ -48,7 +48,8 @@ class Program
                 var logger = provider.GetRequiredService<ILogger<SqlServerService>>();
                 var connectionString = config.GetConnectionString("SqlServer") 
                     ?? throw new InvalidOperationException("SQL Server connection string not found");
-                return new SqlServerService(connectionString, logger);
+                var enableIdentityInsert = config.GetValue<bool>("MigrationSettings:EnableIdentityInsert", true);
+                return new SqlServerService(connectionString, logger, enableIdentityInsert);
             });
 
             services.AddSingleton<ReportService>(provider =>
@@ -59,8 +60,10 @@ class Program
 
             services.AddSingleton<SqlScriptGenerator>(provider =>
             {
+                var config = provider.GetRequiredService<IConfiguration>();
                 var logger = provider.GetRequiredService<ILogger<SqlScriptGenerator>>();
-                return new SqlScriptGenerator(logger);
+                var enableIdentityInsert = config.GetValue<bool>("MigrationSettings:EnableIdentityInsert", true);
+                return new SqlScriptGenerator(logger, enableIdentityInsert);
             });
 
             services.AddSingleton<DateValidator>(provider =>

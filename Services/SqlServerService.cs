@@ -5,8 +5,10 @@ using Microsoft.Extensions.Logging;
 
 namespace PostgresToMsSqlMigration.Services;
 
-public class SqlServerService(string connectionString, ILogger<SqlServerService> logger)
+public class SqlServerService(string connectionString, ILogger<SqlServerService> logger, bool enableIdentityInsert = true)
 {
+    private readonly bool _enableIdentityInsert = enableIdentityInsert;
+
     public async Task CreateTableAsync(TableInfo table)
     {
         await using var connection = new SqlConnection(connectionString);
@@ -74,22 +76,52 @@ public class SqlServerService(string connectionString, ILogger<SqlServerService>
         var columnList = string.Join(", ", columns);
         var parameterList = string.Join(", ", columns.Select(c => "@" + c.Trim('[', ']')));
 
+        // Check if table has identity columns
+        var hasIdentityColumns = table.Columns.Any(c => c.IsIdentity);
+
         var insertSql = $"INSERT INTO {escapedTableName} ({columnList}) VALUES ({parameterList})";
 
         await using var command = new SqlCommand(insertSql, connection);
 
-        foreach (var row in data)
+        // Enable identity insert if table has identity columns
+        if (hasIdentityColumns && _enableIdentityInsert)
         {
-            command.Parameters.Clear();
+            var identityInsertOnSql = $"SET IDENTITY_INSERT {escapedTableName} ON";
+            await using var identityOnCommand = new SqlCommand(identityInsertOnSql, connection);
+            await identityOnCommand.ExecuteNonQueryAsync();
+            logger.LogDebug("Enabled IDENTITY_INSERT for table: {TableName}", table.TableName);
+        }
+        else if (hasIdentityColumns && !_enableIdentityInsert)
+        {
+            logger.LogWarning("Table {TableName} has identity columns but IDENTITY_INSERT is disabled in configuration", table.TableName);
+        }
 
-            foreach (var kvp in row)
+        try
+        {
+            foreach (var row in data)
             {
-                var paramName = "@" + CaseConverter.ToPascalCase(kvp.Key);
-                var value = kvp.Value == DBNull.Value ? DBNull.Value : kvp.Value;
-                command.Parameters.AddWithValue(paramName, value);
-            }
+                command.Parameters.Clear();
 
-            await command.ExecuteNonQueryAsync();
+                foreach (var kvp in row)
+                {
+                    var paramName = "@" + CaseConverter.ToPascalCase(kvp.Key);
+                    var value = kvp.Value == DBNull.Value ? DBNull.Value : kvp.Value;
+                    command.Parameters.AddWithValue(paramName, value);
+                }
+
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+        finally
+        {
+            // Disable identity insert if table has identity columns and it was enabled
+            if (hasIdentityColumns && _enableIdentityInsert)
+            {
+                var identityInsertOffSql = $"SET IDENTITY_INSERT {escapedTableName} OFF";
+                await using var identityOffCommand = new SqlCommand(identityInsertOffSql, connection);
+                await identityOffCommand.ExecuteNonQueryAsync();
+                logger.LogDebug("Disabled IDENTITY_INSERT for table: {TableName}", table.TableName);
+            }
         }
     }
 
