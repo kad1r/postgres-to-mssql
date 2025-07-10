@@ -248,13 +248,18 @@ public class PostgreSqlService
         using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync();
 
-        var query = $"SELECT * FROM \"{schemaName}\".\"{tableName}\" LIMIT @batchSize OFFSET @offset";
+        // Build ORDER BY clause based on primary key or ID column
+        var orderByClause = BuildOrderByClause(tableName, schemaName, connection);
+        
+        var query = $"SELECT * FROM \"{schemaName}\".\"{tableName}\" {orderByClause} LIMIT @batchSize OFFSET @offset";
         
         using var command = new NpgsqlCommand(query, connection);
         command.Parameters.AddWithValue("@batchSize", batchSize);
         command.Parameters.AddWithValue("@offset", offset);
 
         using var reader = await command.ExecuteReaderAsync();
+        var seenRows = new HashSet<string>(); // Track seen rows to prevent duplicates
+        
         while (await reader.ReadAsync())
         {
             var row = new Dictionary<string, object>();
@@ -264,10 +269,145 @@ public class PostgreSqlService
                 var value = reader.IsDBNull(i) ? DBNull.Value : reader.GetValue(i);
                 row[columnName] = value;
             }
-            data.Add(row);
+            
+            // Create a unique key for this row to check for duplicates
+            var rowKey = CreateRowKey(row);
+            if (!seenRows.Contains(rowKey))
+            {
+                seenRows.Add(rowKey);
+                data.Add(row);
+            }
+            else
+            {
+                _logger.LogWarning("Duplicate row detected and skipped in table {TableName} at offset {Offset}", tableName, offset);
+            }
         }
 
         return data;
+    }
+
+    private string BuildOrderByClause(string tableName, string schemaName, NpgsqlConnection connection)
+    {
+        // First try to get primary key columns
+        var pkColumns = GetPrimaryKeyColumns(tableName, schemaName, connection);
+        
+        if (pkColumns.Any())
+        {
+            // Order by primary key columns
+            var pkOrderBy = string.Join(", ", pkColumns.Select(col => $"\"{col}\" ASC"));
+            _logger.LogDebug("Using primary key ordering for table {TableName}: {OrderBy}", tableName, pkOrderBy);
+            return $"ORDER BY {pkOrderBy}";
+        }
+        
+        // If no primary key, try to find an ID column
+        var idColumns = GetIdColumns(tableName, schemaName, connection);
+        if (idColumns.Any())
+        {
+            // Order by ID columns
+            var idOrderBy = string.Join(", ", idColumns.Select(col => $"\"{col}\" ASC"));
+            _logger.LogDebug("Using ID column ordering for table {TableName}: {OrderBy}", tableName, idOrderBy);
+            return $"ORDER BY {idOrderBy}";
+        }
+        
+        // If no primary key or ID column found, order by all columns to ensure consistency
+        var allColumns = GetAllColumns(tableName, schemaName, connection);
+        if (allColumns.Any())
+        {
+            var allOrderBy = string.Join(", ", allColumns.Select(col => $"\"{col}\" ASC"));
+            _logger.LogDebug("Using all columns ordering for table {TableName}: {OrderBy}", tableName, allOrderBy);
+            return $"ORDER BY {allOrderBy}";
+        }
+        
+        // Fallback: no ordering (should not happen)
+        _logger.LogWarning("No ordering clause could be determined for table {TableName}", tableName);
+        return "";
+    }
+
+    private List<string> GetPrimaryKeyColumns(string tableName, string schemaName, NpgsqlConnection connection)
+    {
+        var pkColumns = new List<string>();
+        
+        var pkQuery = @"
+            SELECT 
+                kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu 
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            WHERE tc.constraint_type = 'PRIMARY KEY'
+                AND tc.table_name = @tableName
+                AND tc.table_schema = @schemaName
+            ORDER BY kcu.ordinal_position";
+
+        using var command = new NpgsqlCommand(pkQuery, connection);
+        command.Parameters.AddWithValue("@tableName", tableName);
+        command.Parameters.AddWithValue("@schemaName", schemaName);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            pkColumns.Add(reader.GetString(0));
+        }
+
+        return pkColumns;
+    }
+
+    private List<string> GetIdColumns(string tableName, string schemaName, NpgsqlConnection connection)
+    {
+        var idColumns = new List<string>();
+        
+        var idQuery = @"
+            SELECT 
+                column_name
+            FROM information_schema.columns
+            WHERE table_name = @tableName
+                AND table_schema = @schemaName
+                AND column_name ILIKE '%id%'
+            ORDER BY ordinal_position";
+
+        using var command = new NpgsqlCommand(idQuery, connection);
+        command.Parameters.AddWithValue("@tableName", tableName);
+        command.Parameters.AddWithValue("@schemaName", schemaName);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            idColumns.Add(reader.GetString(0));
+        }
+
+        return idColumns;
+    }
+
+    private List<string> GetAllColumns(string tableName, string schemaName, NpgsqlConnection connection)
+    {
+        var columns = new List<string>();
+        
+        var columnQuery = @"
+            SELECT 
+                column_name
+            FROM information_schema.columns
+            WHERE table_name = @tableName
+                AND table_schema = @schemaName
+            ORDER BY ordinal_position";
+
+        using var command = new NpgsqlCommand(columnQuery, connection);
+        command.Parameters.AddWithValue("@tableName", tableName);
+        command.Parameters.AddWithValue("@schemaName", schemaName);
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        return columns;
+    }
+
+    private string CreateRowKey(Dictionary<string, object> row)
+    {
+        // Create a unique key for the row by concatenating all values
+        var values = row.Values.Select(v => v?.ToString() ?? "NULL").ToArray();
+        return string.Join("|", values);
     }
 
     public async Task<long> GetTableRowCountAsync(string tableName, string schemaName)

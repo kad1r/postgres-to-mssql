@@ -15,7 +15,8 @@ public class MigrationService
     int batchSize = 1000,
     string scriptGenerationMethod = "Optimized",
     bool useBulkInsert = false,
-    bool disableForeignKeyConstraints = true)
+    bool disableForeignKeyConstraints = true,
+    bool validateScriptsForDuplicates = true)
 {
     public async Task MigrateAsync(List<string> skipTables, List<string> skipDataMigrationTables, MigrationMode mode)
     {
@@ -65,9 +66,16 @@ public class MigrationService
             }
 
             // Step 3: Migrate data
-            if (mode == MigrationMode.DataOnly || mode == MigrationMode.Both)
+            if (mode == MigrationMode.DataOnly || mode == MigrationMode.Both || mode == MigrationMode.DataScriptsOnly)
             {
-                logger.LogInformation("Migrating data...");
+                if (mode == MigrationMode.DataScriptsOnly)
+                {
+                    logger.LogInformation("Generating data migration scripts...");
+                }
+                else
+                {
+                    logger.LogInformation("Migrating data...");
+                }
                 logger.LogInformation("Script generation method: {Method}, Use bulk insert: {UseBulkInsert}",
                     scriptGenerationMethod, useBulkInsert);
                 var dataStartTime = DateTime.UtcNow;
@@ -77,30 +85,50 @@ public class MigrationService
                 logger.LogInformation("Migrating data for {TableCount} tables (skipping {SkipCount} tables)",
                     dataMigrationTables.Count, skipDataMigrationTables.Count);
 
-                // Disable foreign key constraints during data migration
-                await DisableForeignKeyConstraintsAsync();
-
-                try
+                // Only disable foreign key constraints if we're actually executing the migration
+                if (mode != MigrationMode.DataScriptsOnly)
                 {
-                    foreach (var table in dataMigrationTables)
-                    {
-                        await MigrateTableDataAsync(table);
-                    }
+                    await DisableForeignKeyConstraintsAsync();
                 }
-                finally
+
+                foreach (var table in dataMigrationTables)
                 {
-                    // Re-enable foreign key constraints after data migration
+                    await MigrateTableDataAsync(table, mode);
+                }
+
+                // Only re-enable foreign key constraints if we actually disabled them
+                if (mode != MigrationMode.DataScriptsOnly)
+                {
                     await EnableForeignKeyConstraintsAsync();
                 }
 
                 dataMigrationTime = DateTime.UtcNow - dataStartTime;
-                logger.LogInformation("Data migration completed in {DataTime}", dataMigrationTime);
+                if (mode == MigrationMode.DataScriptsOnly)
+                {
+                    logger.LogInformation("Data migration script generation completed in {DataTime}", dataMigrationTime);
+                }
+                else
+                {
+                    logger.LogInformation("Data migration completed in {DataTime}", dataMigrationTime);
+                }
+
+                // Validate generated scripts for duplicates
+                logger.LogInformation("Validating generated scripts for duplicate rows...");
+                var scriptsDirectory = Path.Combine("files", "migration-scripts");
+                if (validateScriptsForDuplicates)
+                {
+                    ScriptValidator.ValidateScriptsForDuplicates(scriptsDirectory, logger);
+                }
+                else
+                {
+                    logger.LogInformation("Skipping script validation for duplicates as per configuration.");
+                }
             }
 
             var totalTime = DateTime.UtcNow - totalStartTime;
 
             // Display timing summary
-            DisplayTimingSummary(schemaCreationTime, dataMigrationTime, totalTime);
+            DisplayTimingSummary(schemaCreationTime, dataMigrationTime, totalTime, mode);
 
             logger.LogInformation("Migration completed successfully!");
 
@@ -140,7 +168,7 @@ public class MigrationService
         }
     }
 
-    private async Task MigrateTableDataAsync(TableInfo table)
+    private async Task MigrateTableDataAsync(TableInfo table, MigrationMode mode)
     {
         try
         {
@@ -157,6 +185,7 @@ public class MigrationService
             var offset = 0;
             var migratedRows = 0;
             var batchNumber = 1;
+            var totalUniqueRows = 0;
 
             while (offset < totalRows)
             {
@@ -172,28 +201,52 @@ public class MigrationService
                         dateValidator.LogInvalidDatesAndQuit(invalidDates);
                     }
 
+                    // Remove duplicates from the batch
+                    var uniqueBatch = RemoveDuplicateRows(batch, table);
+                    var duplicateCount = batch.Count - uniqueBatch.Count;
+                    
+                    if (duplicateCount > 0)
+                    {
+                        logger.LogWarning("Removed {DuplicateCount} duplicate rows from batch {BatchNumber} for table {TableName}",
+                            duplicateCount, batchNumber, table.TableName);
+                    }
+
                     // Save the data migration script for this batch
                     var startRow = offset + 1;
                     var endRow = offset + batch.Count;
 
                     if (useBulkInsert)
                     {
-                        await scriptGenerator.SaveBulkInsertScriptAsync(table, batch, batchNumber, startRow, endRow);
+                        await scriptGenerator.SaveBulkInsertScriptAsync(table, uniqueBatch, batchNumber, startRow, endRow);
                     }
                     else if (scriptGenerationMethod.Equals("HighPerformance", StringComparison.OrdinalIgnoreCase))
                     {
-                        await scriptGenerator.SaveHighPerformanceScriptAsync(table, batch, batchNumber, startRow, endRow);
+                        await scriptGenerator.SaveHighPerformanceScriptAsync(table, uniqueBatch, batchNumber, startRow, endRow);
                     }
                     else
                     {
-                        await scriptGenerator.SaveDataMigrationScriptAsync(table, batch, batchNumber, startRow, endRow);
+                        await scriptGenerator.SaveDataMigrationScriptAsync(table, uniqueBatch, batchNumber, startRow, endRow);
                     }
 
-                    await sqlServerService.InsertDataAsync(table, batch);
+                    // Insert unique data into SQL Server (only if not in DataScriptsOnly mode)
+                    if (mode != MigrationMode.DataScriptsOnly)
+                    {
+                        await sqlServerService.InsertDataAsync(table, uniqueBatch);
+                    }
 
                     migratedRows += batch.Count;
-                    logger.LogInformation("Migrated {MigratedRows}/{TotalRows} rows from table: {TableName} (Batch {BatchNumber})",
-                        migratedRows, totalRows, table.TableName, batchNumber);
+                    totalUniqueRows += uniqueBatch.Count;
+                    
+                    if (mode == MigrationMode.DataScriptsOnly)
+                    {
+                        logger.LogInformation("Generated script for {MigratedRows}/{TotalRows} rows from table: {TableName} (Batch {BatchNumber}, Unique: {UniqueCount})",
+                            migratedRows, totalRows, table.TableName, batchNumber, uniqueBatch.Count);
+                    }
+                    else
+                    {
+                        logger.LogInformation("Migrated {MigratedRows}/{TotalRows} rows from table: {TableName} (Batch {BatchNumber}, Unique: {UniqueCount})",
+                            migratedRows, totalRows, table.TableName, batchNumber, uniqueBatch.Count);
+                    }
 
                     batchNumber++;
                 }
@@ -201,7 +254,16 @@ public class MigrationService
                 offset += batchSize;
             }
 
-            logger.LogInformation("Completed data migration for table: {TableName}", table.TableName);
+            if (mode == MigrationMode.DataScriptsOnly)
+            {
+                logger.LogInformation("Completed script generation for table: {TableName}. Total rows processed: {TotalRows}, Unique rows in scripts: {UniqueRows}",
+                    table.TableName, migratedRows, totalUniqueRows);
+            }
+            else
+            {
+                logger.LogInformation("Completed data migration for table: {TableName}. Total rows processed: {TotalRows}, Unique rows migrated: {UniqueRows}",
+                    table.TableName, migratedRows, totalUniqueRows);
+            }
         }
         catch (Exception ex)
         {
@@ -209,6 +271,39 @@ public class MigrationService
 
             throw;
         }
+    }
+
+    private List<Dictionary<string, object>> RemoveDuplicateRows(List<Dictionary<string, object>> data, TableInfo table)
+    {
+        var uniqueData = new List<Dictionary<string, object>>();
+        var seenRows = new HashSet<string>();
+
+        foreach (var row in data)
+        {
+            var rowKey = CreateRowKey(row, table);
+            if (!seenRows.Contains(rowKey))
+            {
+                seenRows.Add(rowKey);
+                uniqueData.Add(row);
+            }
+        }
+
+        return uniqueData;
+    }
+
+    private string CreateRowKey(Dictionary<string, object> row, TableInfo table)
+    {
+        // Create a unique key based on primary key columns if available, otherwise use all columns
+        var keyColumns = table.PrimaryKeys.Any() ? table.PrimaryKeys : table.Columns.Select(c => c.ColumnName).ToList();
+        
+        var keyValues = new List<string>();
+        foreach (var columnName in keyColumns)
+        {
+            var value = row.ContainsKey(columnName) ? row[columnName] : DBNull.Value;
+            keyValues.Add(value?.ToString() ?? "NULL");
+        }
+        
+        return string.Join("|", keyValues);
     }
 
     private async Task CreateIndexesAndForeignKeysAsync(TableInfo table)
@@ -240,21 +335,36 @@ public class MigrationService
         }
     }
 
-    private void DisplayTimingSummary(TimeSpan schemaCreationTime, TimeSpan dataMigrationTime, TimeSpan totalTime)
+    private void DisplayTimingSummary(TimeSpan schemaCreationTime, TimeSpan dataMigrationTime, TimeSpan totalTime, MigrationMode mode)
     {
         Console.WriteLine();
         Console.WriteLine("=".PadRight(60, '='));
         Console.WriteLine("MIGRATION TIMING SUMMARY");
         Console.WriteLine("=".PadRight(60, '='));
         Console.WriteLine($"Schema Creation Time: {FormatTimeSpan(schemaCreationTime)}");
-        Console.WriteLine($"Data Migration Time:  {FormatTimeSpan(dataMigrationTime)}");
+        
+        if (mode == MigrationMode.DataScriptsOnly)
+        {
+            Console.WriteLine($"Script Generation Time: {FormatTimeSpan(dataMigrationTime)}");
+        }
+        else
+        {
+            Console.WriteLine($"Data Migration Time:  {FormatTimeSpan(dataMigrationTime)}");
+        }
         Console.WriteLine($"Total Migration Time: {FormatTimeSpan(totalTime)}");
         Console.WriteLine("=".PadRight(60, '='));
         Console.WriteLine();
 
         logger.LogInformation("Migration timing summary:");
         logger.LogInformation("Schema Creation Time: {SchemaTime}", FormatTimeSpan(schemaCreationTime));
-        logger.LogInformation("Data Migration Time: {DataTime}", FormatTimeSpan(dataMigrationTime));
+        if (mode == MigrationMode.DataScriptsOnly)
+        {
+            logger.LogInformation("Script Generation Time: {DataTime}", FormatTimeSpan(dataMigrationTime));
+        }
+        else
+        {
+            logger.LogInformation("Data Migration Time: {DataTime}", FormatTimeSpan(dataMigrationTime));
+        }
         logger.LogInformation("Total Migration Time: {TotalTime}", FormatTimeSpan(totalTime));
     }
 

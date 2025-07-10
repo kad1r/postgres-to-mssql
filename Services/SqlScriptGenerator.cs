@@ -32,6 +32,15 @@ public class SqlScriptGenerator
     {
         if (!data.Any()) return;
 
+        // Remove duplicates from the data before generating script
+        var uniqueData = RemoveDuplicateRows(data, table);
+        
+        if (uniqueData.Count != data.Count)
+        {
+            _logger.LogWarning("Removed {DuplicateCount} duplicate rows from batch {BatchNumber} for table {TableName}",
+                data.Count - uniqueData.Count, batchNumber, table.TableName);
+        }
+
         var tableName = CaseConverter.ToPascalCase(table.TableName);
         var escapedTableName = ReservedKeywordHandler.EscapeIdentifier(tableName);
         var columns = table.Columns.Select(c => ReservedKeywordHandler.EscapeIdentifier(CaseConverter.ToPascalCase(c.ColumnName))).ToList();
@@ -42,8 +51,9 @@ public class SqlScriptGenerator
             $"-- Data migration script for table: {table.TableName}",
             $"-- Batch: {batchNumber} (Rows {startRow}-{endRow})",
             $"-- Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC",
-            $"-- Total rows in batch: {data.Count}",
+            $"-- Total rows in batch: {uniqueData.Count}",
             $"-- Performance optimized for bulk insert",
+            $"-- Data ordered by primary key/ID to ensure consistency",
             "",
             "SET NOCOUNT ON;",
             "BEGIN TRANSACTION;",
@@ -55,9 +65,9 @@ public class SqlScriptGenerator
         const int chunkSize = 1000;
         var allValueStatements = new List<string>();
 
-        for (var i = 0; i < data.Count; i += chunkSize)
+        for (var i = 0; i < uniqueData.Count; i += chunkSize)
         {
-            var chunk = data.Skip(i).Take(chunkSize);
+            var chunk = uniqueData.Skip(i).Take(chunkSize);
             var chunkStatements = new List<string>();
 
             foreach (var row in chunk)
@@ -102,7 +112,7 @@ public class SqlScriptGenerator
 
         await File.WriteAllLinesAsync(filePath, scriptContent);
 
-        _logger.LogDebug("Saved optimized data migration script: {FileName} ({RowCount} rows)", fileName, data.Count);
+        _logger.LogDebug("Saved optimized data migration script: {FileName} ({RowCount} rows)", fileName, uniqueData.Count);
     }
 
     public async Task SaveHighPerformanceScriptAsync
@@ -116,6 +126,15 @@ public class SqlScriptGenerator
     {
         if (data.Count == 0) return;
 
+        // Remove duplicates from the data before generating script
+        var uniqueData = RemoveDuplicateRows(data, table);
+        
+        if (uniqueData.Count != data.Count)
+        {
+            _logger.LogWarning("Removed {DuplicateCount} duplicate rows from high-performance batch {BatchNumber} for table {TableName}",
+                data.Count - uniqueData.Count, batchNumber, table.TableName);
+        }
+
         var tableName = CaseConverter.ToPascalCase(table.TableName);
         var escapedTableName = ReservedKeywordHandler.EscapeIdentifier(tableName);
         var columns = table.Columns.Select(c => ReservedKeywordHandler.EscapeIdentifier(CaseConverter.ToPascalCase(c.ColumnName))).ToList();
@@ -126,8 +145,9 @@ public class SqlScriptGenerator
             $"-- High-performance data migration script for table: {table.TableName}",
             $"-- Batch: {batchNumber} (Rows {startRow}-{endRow})",
             $"-- Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC",
-            $"-- Total rows in batch: {data.Count}",
+            $"-- Total rows in batch: {uniqueData.Count}",
             $"-- Performance optimized with SQL Server hints",
+            $"-- Data ordered by primary key/ID to ensure consistency",
             "",
             "SET NOCOUNT ON;",
             "SET ARITHABORT ON;",
@@ -148,9 +168,9 @@ public class SqlScriptGenerator
         const int chunkSize = 2000;
         var allValueStatements = new List<string>();
 
-        for (var i = 0; i < data.Count; i += chunkSize)
+        for (var i = 0; i < uniqueData.Count; i += chunkSize)
         {
-            var chunk = data.Skip(i).Take(chunkSize);
+            var chunk = uniqueData.Skip(i).Take(chunkSize);
             var chunkStatements = new List<string>();
 
             foreach (var row in chunk)
@@ -198,7 +218,7 @@ public class SqlScriptGenerator
 
         await File.WriteAllLinesAsync(filePath, scriptContent);
 
-        _logger.LogDebug("Saved high-performance data migration script: {FileName} ({RowCount} rows)", fileName, data.Count);
+        _logger.LogDebug("Saved high-performance data migration script: {FileName} ({RowCount} rows)", fileName, uniqueData.Count);
     }
 
     public async Task SaveBulkInsertScriptAsync
@@ -212,6 +232,15 @@ public class SqlScriptGenerator
     {
         if (data.Count == 0) return;
 
+        // Remove duplicates from the data before generating script
+        var uniqueData = RemoveDuplicateRows(data, table);
+        
+        if (uniqueData.Count != data.Count)
+        {
+            _logger.LogWarning("Removed {DuplicateCount} duplicate rows from bulk insert batch {BatchNumber} for table {TableName}",
+                data.Count - uniqueData.Count, batchNumber, table.TableName);
+        }
+
         var tableName = CaseConverter.ToPascalCase(table.TableName);
         var escapedTableName = ReservedKeywordHandler.EscapeIdentifier(tableName);
         var columns = table.Columns.Select(c => ReservedKeywordHandler.EscapeIdentifier(CaseConverter.ToPascalCase(c.ColumnName))).ToList();
@@ -224,7 +253,7 @@ public class SqlScriptGenerator
         // Write CSV data
         await using var csvWriter = new StreamWriter(csvFilePath);
 
-        foreach (var row in data)
+        foreach (var row in uniqueData)
         {
             var csvValues = new List<string>();
 
@@ -244,9 +273,10 @@ public class SqlScriptGenerator
             $"-- Bulk insert script for table: {table.TableName}",
             $"-- Batch: {batchNumber} (Rows {startRow}-{endRow})",
             $"-- Generated: {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss} UTC",
-            $"-- Total rows in batch: {data.Count}",
+            $"-- Total rows in batch: {uniqueData.Count}",
             $"-- CSV file: {csvFileName}",
             $"-- Performance optimized using BULK INSERT",
+            $"-- Data ordered by primary key/ID to ensure consistency",
             "",
             "SET NOCOUNT ON;",
             "BEGIN TRANSACTION;",
@@ -273,7 +303,40 @@ public class SqlScriptGenerator
         await File.WriteAllLinesAsync(scriptFilePath, scriptContent);
 
         _logger.LogDebug("Saved bulk insert script: {FileName} ({RowCount} rows) with CSV: {CsvFile}",
-            scriptFileName, data.Count, csvFileName);
+            scriptFileName, uniqueData.Count, csvFileName);
+    }
+
+    private List<Dictionary<string, object>> RemoveDuplicateRows(List<Dictionary<string, object>> data, TableInfo table)
+    {
+        var uniqueData = new List<Dictionary<string, object>>();
+        var seenRows = new HashSet<string>();
+
+        foreach (var row in data)
+        {
+            var rowKey = CreateRowKey(row, table);
+            if (!seenRows.Contains(rowKey))
+            {
+                seenRows.Add(rowKey);
+                uniqueData.Add(row);
+            }
+        }
+
+        return uniqueData;
+    }
+
+    private string CreateRowKey(Dictionary<string, object> row, TableInfo table)
+    {
+        // Create a unique key based on primary key columns if available, otherwise use all columns
+        var keyColumns = table.PrimaryKeys.Any() ? table.PrimaryKeys : table.Columns.Select(c => c.ColumnName).ToList();
+        
+        var keyValues = new List<string>();
+        foreach (var columnName in keyColumns)
+        {
+            var value = row.ContainsKey(columnName) ? row[columnName] : DBNull.Value;
+            keyValues.Add(value?.ToString() ?? "NULL");
+        }
+        
+        return string.Join("|", keyValues);
     }
 
     private static string FormatCsvValue(object value, string dataType)

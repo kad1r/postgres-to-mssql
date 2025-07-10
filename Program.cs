@@ -82,7 +82,8 @@ class Program
                 var scriptGenerationMethod = config.GetValue<string>("MigrationSettings:ScriptGenerationMethod", "Optimized");
                 var useBulkInsert = config.GetValue<bool>("MigrationSettings:UseBulkInsert", false);
                 var disableForeignKeyConstraints = config.GetValue<bool>("MigrationSettings:DisableForeignKeyConstraints", true);
-                return new MigrationService(postgreService, sqlService, reportService, scriptGenerator, dateValidator, logger, batchSize, scriptGenerationMethod, useBulkInsert, disableForeignKeyConstraints);
+                var validateScriptsForDuplicates = config.GetValue<bool>("MigrationSettings:ValidateScriptsForDuplicates", true);
+                return new MigrationService(postgreService, sqlService, reportService, scriptGenerator, dateValidator, logger, batchSize, scriptGenerationMethod, useBulkInsert, disableForeignKeyConstraints, validateScriptsForDuplicates);
             });
 
             var serviceProvider = services.BuildServiceProvider();
@@ -128,8 +129,9 @@ class Program
         Console.WriteLine("1. Schema Only - Create tables, indexes, and foreign keys");
         Console.WriteLine("2. Data Only - Migrate data only (tables must exist)");
         Console.WriteLine("3. Both - Complete migration (schema + data)");
+        Console.WriteLine("4. Data Scripts Only - Generate data migration scripts without execution");
         Console.WriteLine();
-        Console.Write("Enter your choice (1-3): ");
+        Console.Write("Enter your choice (1-4): ");
 
         while (true)
         {
@@ -148,8 +150,11 @@ class Program
                     case 3:
                         Console.WriteLine("Selected: Complete migration (Schema + Data)");
                         return MigrationMode.Both;
+                    case 4:
+                        Console.WriteLine("Selected: Data Scripts Only - Generate scripts without execution");
+                        return MigrationMode.DataScriptsOnly;
                     default:
-                        Console.Write("Invalid choice. Please enter 1, 2, or 3: ");
+                        Console.Write("Invalid choice. Please enter 1, 2, 3, or 4: ");
                         break;
                 }
             }
